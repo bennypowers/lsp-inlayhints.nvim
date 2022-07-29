@@ -1,6 +1,6 @@
 # lsp-inlayhints.nvim
 
-Originally based on simrat39's [rust-tools.nvim](https://github.com/simrat39/rust-tools.nvim) implementation.
+Partial implementation of [LSP](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) inlay hint.
 
 ## Installation
 
@@ -18,10 +18,10 @@ require("lsp-inlayhints").on_attach(bufnr, client)
 
 ### LspAttach
 
-For nightly, you can use the `LspAttach` event:
+For >0.8, you can use the `LspAttach` event:
 
 ```lua
-local group = vim.api.nvim_create_augroup("LspAttach_inlayhints", {})
+vim.api.nvim_create_augroup("LspAttach_inlayhints", {})
 vim.api.nvim_create_autocmd("LspAttach", {
   group = "LspAttach_inlayhints",
   callback = function(args)
@@ -29,19 +29,30 @@ vim.api.nvim_create_autocmd("LspAttach", {
       return
     end
 
+    local bufnr = vim.lsp.get_client_by_id(args.buf)
     local client = vim.lsp.get_client_by_id(args.data.client_id)
-    require("lsp-inlayhints").on_attach(args.buf, client)
+    require("lsp-inlayhints").on_attach(bufnr, client)
   end,
 })
 ```
 
 ### Configuration
 
-Which `InlayHints` are provided depends on the language server you're using. Read their docs.
+If and which `InlayHints` are provided depends on the language server's configuration. **Read their docs**.
 
-Highlight is set to `LspInlayHint`. If not set, defaults to `Comment` foreground with `CursorLine` background, creating a 'block'-like effect.
+#### Highlight
 
-A common suggestion is to use `Comment`: `hi link LspInlayHint Comment`. VSCode's dark theme is similar to `hi LspInlayHint guifg=#d8d8d8 guibg=#3a3a3a`
+Highlight group is `LspInlayHint`; defaults to `Comment` foreground with `CursorLine` background, creating a 'block'-like effect.
+
+A common suggestion is to use `Comment`, either by linking it (`hi link LspInlayHint Comment`) or setting it in the options.
+
+VSCode's dark theme is similar to `hi LspInlayHint guifg=#d8d8d8 guibg=#3a3a3a`.
+
+#### Default Configuration
+
+You only need to pass the options you want to override.
+
+<details>
 
 ```lua
 local default_config = {
@@ -79,27 +90,11 @@ local default_config = {
 }
 ```
 
-## Available commands:
-
-### toggle
-
-Enable/disable the plugin globally.
-
-```lua
-require('lsp-inlayhints').toggle()
-```
-
-### reset
-
-Clears all inlay hints in the current buffer.
-
-```lua
-require('lsp-inlayhints').reset()
-```
+</details>
 
 ## Languages
 
-Should work for all languages that implement the spec. Tested on `rust-analyzer (via rust-tools.nvim)`, `fsautocomplete (via ionide.vim)`, `sumneko_lua`, `gopls`.
+Should work for **all** languages that implement the spec. Tested on `rust-analyzer (via rust-tools.nvim)`, `fsautocomplete (via ionide.vim)`, `sumneko_lua`, `gopls`.
 
 ### Rust
 
@@ -141,3 +136,39 @@ If you're using `ray-x/go.nvim`, set `lsp_inlay_hints = { enable = false }`.
 If a server implements inlay hints on a different endpoint/method (not
 `textDocument/inlayHints`), raise an issue with the request/response details to
 check the possibility of a workaround.
+
+## Available commands:
+
+### toggle
+
+Enable/disable the plugin globally.
+
+```lua
+require('lsp-inlayhints').toggle()
+```
+
+### reset
+
+Clears all inlay hints in the current buffer.
+
+```lua
+require('lsp-inlayhints').reset()
+```
+
+## Known issues
+
+InlayHints (extmarks) get pushed to the line below when commenting lines. See: https://github.com/lvimuser/lsp-inlayhints.nvim/issues/2#issuecomment-1197975664.
+
+## Missing
+
+- [Resolve request](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#inlayHint_resolve)
+- Command|Execute|TextEdits. Ref: [inlayHintLabelPart](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#inlayHintLabelPart)
+
+## Acknowledgements
+
+Originally based on simrat39's [rust-tools.nvim](https://github.com/simrat39/rust-tools.nvim) implementation.
+
+References:
+
+- nvim's builtin codelens
+- VSCode
