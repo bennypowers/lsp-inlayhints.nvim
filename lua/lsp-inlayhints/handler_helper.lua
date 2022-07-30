@@ -103,13 +103,16 @@ local function get_max_len(bufnr, parsed_data)
   return max_len
 end
 
-local render_hints = function(bufnr, parsed, namespace)
+local render_hints = function(bufnr, parsed, namespace, range)
+  -- range given is 1-indexed, but clear is 0-indexed (end is exclusive).
+  vim.api.nvim_buf_clear_namespace(bufnr, namespace, range.start[1] - 1, range._end[1])
+
   local max_len
   if config.options.inlay_hints.max_len_align then
     max_len = get_max_len(bufnr, parsed)
   end
 
-  local has_hint
+  local extmarks = {}
 
   for line, line_hints in pairs(parsed) do
     local current_line = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1]
@@ -148,11 +151,11 @@ local render_hints = function(bufnr, parsed, namespace)
         hl_mode = "combine",
       })
 
-      has_hint = true
+      table.insert(extmarks, { line, virt_text })
     end
   end
 
-  return has_hint
+  return extmarks
 end
 
 return {

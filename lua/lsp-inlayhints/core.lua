@@ -5,25 +5,39 @@ local adapter = require "lsp-inlayhints.adapter"
 local store = require("lsp-inlayhints.store")._store
 
 local AUGROUP = "_InlayHints"
-local namespace = vim.api.nvim_create_namespace "textDocument/inlayHints"
-local enabled = nil
+local ns = vim.api.nvim_create_namespace "textDocument/inlayHints"
+local enabled
 
 -- TODO Set client capability
 vim.lsp.handlers["workspace/inlayHint/refresh"] = function(_, _, ctx)
   local buffers = vim.lsp.get_buffers_by_client_id(ctx.client_id)
   for _, bufnr in pairs(buffers) do
-    vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+    vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
   end
 
   return vim.NIL
 end
 
 local function set_store(bufnr, client)
+  vim.api.nvim_buf_attach(bufnr, false, {
+    on_detach = function()
+      store.b[bufnr].cached_hints = nil
+      vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+    end,
+    on_lines = function(_, _, _, first_lnum, last_lnum)
+      vim.api.nvim_buf_clear_namespace(bufnr, ns, first_lnum, last_lnum)
+    end,
+  })
+
   store.b[bufnr].client = { name = client.name, id = client.id }
   store.b[bufnr].attached = true
 
   if not store.active_clients[client.name] then
-    M.show(bufnr)
+    -- give it some time for the server to start;
+    -- otherwise, the first requests afterrs may take longer than necessary
+    vim.defer_fn(function()
+      M.show(bufnr)
+    end, 1000)
   end
   store.active_clients[client.name] = true
 end
@@ -71,15 +85,24 @@ function M.setup_autocmd(bufnr)
     group = group,
     buffer = bufnr,
     callback = function()
-      M.show()
+      M.show(bufnr)
+    end,
+  })
+
+  local delayed_events = { "TextChangedI" }
+  local aucmd2 = vim.api.nvim_create_autocmd(delayed_events, {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      M.show(bufnr, true)
     end,
   })
 
   -- guard against multiple calls
-  if store.b[bufnr].aucmd then
-    pcall(vim.api.nvim_del_autocmd, aucmd)
+  for _, v in pairs(store.b[bufnr].aucmd or {}) do
+    pcall(vim.api.nvim_del_autocmd, v)
   end
-  store.b[bufnr].aucmd = aucmd
+  store.b[bufnr].aucmd = { aucmd, aucmd2 }
 
   if vim.fn.has "nvim-0.8" > 0 then
     local group2 = vim.api.nvim_create_augroup(AUGROUP .. "Detach", { clear = false })
@@ -99,7 +122,9 @@ function M.setup_autocmd(bufnr)
           vim.notify(msg, vim.log.levels.TRACE)
         end
 
-        pcall(vim.api.nvim_del_autocmd, aucmd)
+        for _, v in pairs(store.b[bufnr].aucmd) do
+          pcall(vim.api.nvim_del_autocmd, v)
+        end
         rawset(store.b, bufnr, nil)
       end,
     })
@@ -195,11 +220,19 @@ local function parseHints(result, ctx)
   return map
 end
 
-local function handler(err, result, ctx, range)
-  if err and config.options.debug_mode then
-    local msg = err.message or vim.inspect(err)
-    vim.notify_once("[inlay_hints] LSP error:" .. msg, vim.log.levels.ERROR)
-    return
+local function _key(bufnr)
+  return vim.lsp.util.buf_versions[bufnr]
+end
+
+local function on_refresh(err, result, ctx, range)
+  if err then
+    M.clear(range.start[1] - 1, range._end[1])
+
+    if config.options.debug_mode then
+      local msg = err.message or vim.inspect(err)
+      vim.notify_once("[inlay_hints] LSP error:" .. msg, vim.log.levels.ERROR)
+      return
+    end
   end
 
   local bufnr = ctx.bufnr
@@ -209,12 +242,34 @@ local function handler(err, result, ctx, range)
 
   local parsed = parseHints(result, ctx)
 
-  -- range given is 1-indexed, but clear is 0-indexed (end is exclusive).
-  M.clear(range.start[1] - 1, range._end[1])
-
   local helper = require "lsp-inlayhints.handler_helper"
-  if helper.render_hints(bufnr, parsed, namespace) then
-    enabled = true
+  local hints = helper.render_hints(bufnr, parsed, ns, range)
+
+  if #store.b[bufnr].cached_hints > 30 then
+    store.b[bufnr].cached_hints = {}
+  end
+
+  store.b[bufnr].cached_hints[_key(bufnr)] = hints
+end
+
+local render_cached = function(bufnr)
+  -- local hints = store.cached_hints:get((bufnr))
+  local hints = store.b[bufnr].cached_hints[_key(bufnr)]
+  if not hints then
+    return
+  end
+
+  for _, v in pairs(hints) do
+    local line, virt_text = unpack(v)
+    M.clear(line, line + 1)
+
+    vim.api.nvim_buf_set_extmark(bufnr, ns, line, 0, {
+      virt_text_pos = config.options.inlay_hints.right_align and "right_align" or "eol",
+      virt_text = {
+        { virt_text, config.options.inlay_hints.highlight },
+      },
+      hl_mode = "combine",
+    })
   end
 end
 
@@ -234,18 +289,15 @@ end
 ---@param line_end integer | nil, defaults to -1 (end of buffer)
 function M.clear(line_start, line_end)
   -- clear namespace which clears the virtual text as well
-  vim.api.nvim_buf_clear_namespace(0, namespace, line_start or 0, line_end or -1)
+  vim.api.nvim_buf_clear_namespace(0, ns, line_start or 0, line_end or -1)
 end
 
-local function handler_with_range(range)
-  return function(err, result, ctx)
-    handler(err, result, ctx, range)
-  end
-end
+local scheduler = require("lsp-inlayhints.utils").scheduler:new()
 
 -- Sends the request to get the inlay hints and show them
 ---@param bufnr number | nil
-function M.show(bufnr)
+---@param is_insert boolean | nil
+function M.show(bufnr, is_insert)
   if enabled == false then
     return
   end
@@ -258,18 +310,27 @@ function M.show(bufnr)
     return
   end
 
-  local client = vim.lsp.get_client_by_id(store.b[bufnr].client.id)
-  local range = get_hint_ranges(client.offset_encoding)
-  local params = get_params(range, bufnr)
-  if not params then
-    return
-  end
+  render_cached(bufnr)
 
-  local method = adapter.method(bufnr)
-  utils.request(client, bufnr, method, params, handler_with_range(range))
+  local info = require("lsp-inlayhints.featureDebounce")._for("InlayHints", { min = 25 })
+  local delay = is_insert and math.max(info.get(bufnr), 1250) or info.get(bufnr)
+  scheduler:schedule(function()
+    local client = vim.lsp.get_client_by_id(store.b[bufnr].client.id)
+    local range = get_hint_ranges(client.offset_encoding)
+    local params = get_params(range, bufnr)
+    if not params then
+      return
+    end
+
+    local uv = vim.loop
+    local t1 = uv.hrtime()
+
+    local method = adapter.method(bufnr)
+    utils.request(client, bufnr, method, params, function(err, result, ctx)
+      info.update(bufnr, (uv.hrtime() - t1) * 1e-6)
+      on_refresh(err, result, ctx, range)
+    end)
+  end, delay)
 end
-
-local debounce_ms = 250
-_, M.show = utils.debounce(M.show, debounce_ms)
 
 return M

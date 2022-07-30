@@ -17,6 +17,18 @@ function utils.request(client, bufnr, method, params, handler)
   return success, id
 end
 
+local function cleanup_timer(timer)
+  if timer then
+    if timer:has_ref() then
+      timer:stop()
+      if not timer:is_closing() then
+        timer:close()
+      end
+    end
+    timer = nil
+  end
+end
+
 -- Waits until duration has elapsed since the last call
 utils.debounce = function(fn, duration)
   local timer = vim.loop.new_timer()
@@ -36,19 +48,53 @@ utils.debounce = function(fn, duration)
     group = group,
     pattern = "*",
     callback = function()
-      if timer then
-        if timer:has_ref() then
-          timer:stop()
-          if not timer:is_closing() then
-            timer:close()
-          end
-        end
-        timer = nil
-      end
+      cleanup_timer(timer)
     end,
   })
 
   return timer, inner
 end
+
+local scheduler = {}
+
+function scheduler:new(fn, delay)
+  local t = {
+    fn = fn,
+    delay = delay,
+    running = false,
+    timer = vim.loop.new_timer(),
+  }
+
+  setmetatable(t, self)
+  self.__index = self
+
+  return t
+end
+
+function scheduler:schedule(fn, delay)
+  delay = delay or self.delay
+
+  self.timer:start(delay, 0, function()
+    self:run(fn)
+  end)
+end
+
+function scheduler:run(fn)
+  if self.running then
+    return false
+  end
+
+  fn = fn or self.fn
+  self.running = true
+  vim.schedule_wrap(fn)()
+  self.running = false
+end
+
+function scheduler:clear()
+  cleanup_timer(self.timer)
+  self = nil
+end
+
+utils.scheduler = scheduler
 
 return utils
