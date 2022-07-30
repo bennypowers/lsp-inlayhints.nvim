@@ -69,11 +69,6 @@ function M.on_attach(bufnr, client, force)
     vim.notify_once("[LSP Inlayhints] attached to " .. client.name, vim.log.levels.TRACE)
   end
 
-  if config.options.debug_mode and store.b[bufnr].attached then
-    local msg = vim.inspect { "already attached", bufnr = bufnr, store = store.b[bufnr] }
-    vim.notify(msg, vim.log.levels.TRACE)
-  end
-
   set_store(bufnr, client)
   M.setup_autocmd(bufnr)
 end
@@ -91,7 +86,7 @@ function M.setup_autocmd(bufnr)
     end,
   })
 
-  local delayed_events = { "TextChangedI" }
+  local delayed_events = { "CursorHoldI" }
   local aucmd2 = vim.api.nvim_create_autocmd(delayed_events, {
     group = group,
     buffer = bufnr,
@@ -315,7 +310,8 @@ function M.show(bufnr, is_insert)
   render_cached(bufnr)
 
   local info = require("lsp-inlayhints.featureDebounce")._for("InlayHints", { min = 25 })
-  local delay = is_insert and math.max(info.get(bufnr), 1250) or info.get(bufnr)
+  -- effectively ~1250 for insert, since we're triggering on CursorHoldI,
+  local delay = is_insert and math.max(info.get(bufnr), 1000) or info.get(bufnr)
   scheduler:schedule(function()
     local client = vim.lsp.get_client_by_id(store.b[bufnr].client.id)
     local range = get_hint_ranges(client.offset_encoding)
