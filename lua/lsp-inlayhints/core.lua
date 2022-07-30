@@ -19,15 +19,17 @@ vim.lsp.handlers["workspace/inlayHint/refresh"] = function(_, _, ctx)
 end
 
 local function set_store(bufnr, client)
-  vim.api.nvim_buf_attach(bufnr, false, {
-    on_detach = function()
-      store.b[bufnr].cached_hints = nil
-      vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-    end,
-    on_lines = function(_, _, _, first_lnum, last_lnum)
-      vim.api.nvim_buf_clear_namespace(bufnr, ns, first_lnum, last_lnum)
-    end,
-  })
+  if not store.b[bufnr].attached then
+    vim.api.nvim_buf_attach(bufnr, false, {
+      on_detach = function()
+        store.b[bufnr].cached_hints = nil
+        vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+      end,
+      on_lines = function(_, _, _, first_lnum, last_lnum)
+        vim.api.nvim_buf_clear_namespace(bufnr, ns, first_lnum, last_lnum)
+      end,
+    })
+  end
 
   store.b[bufnr].client = { name = client.name, id = client.id }
   store.b[bufnr].attached = true
