@@ -15,6 +15,8 @@ vim.lsp.handlers["workspace/inlayHint/refresh"] = function(_, _, ctx)
     vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
   end
 
+  -- For each visible win/bufnr, call show().
+
   return vim.NIL
 end
 
@@ -26,6 +28,18 @@ local function set_store(bufnr, client)
         vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
       end,
       on_lines = function(_, _, _, first_lnum, last_lnum)
+        -- for l, _ in pairs(store.b[bufnr].cached_hints) do
+        --   if l >= last_lnum then
+        --     goto clear
+        --   end
+
+        --   if l >= first_lnum then
+        --     store.b[bufnr].cached_hints[l] = nil
+        --   end
+        -- end
+        -- ::clear::
+
+        store.b[bufnr].cached_hints = {}
         vim.api.nvim_buf_clear_namespace(bufnr, ns, first_lnum, last_lnum)
       end,
     })
@@ -149,14 +163,6 @@ end
 local function get_hint_ranges(offset_encoding)
   local line_count = vim.api.nvim_buf_line_count(0) -- 1-based indexing
 
-  if line_count <= 200 then
-    local col = col_of_row(line_count, offset_encoding)
-    return {
-      start = { 1, 0 },
-      _end = { line_count, col },
-    }
-  end
-
   local extra = 30
   local visible = get_visible_lines()
 
@@ -217,13 +223,9 @@ local function parseHints(result, ctx)
   return map
 end
 
-local function _key(bufnr)
-  return vim.lsp.util.buf_versions[bufnr]
-end
-
 local function on_refresh(err, result, ctx, range)
   if err then
-    M.clear(range.start[1] - 1, range._end[1])
+    M.clear(ctx.bufnr, range.start[1] - 1, range._end[1])
 
     if config.options.debug_mode then
       local msg = err.message or vim.inspect(err)
@@ -233,32 +235,27 @@ local function on_refresh(err, result, ctx, range)
   end
 
   local bufnr = ctx.bufnr
-  if vim.api.nvim_get_current_buf() ~= bufnr then
-    return
-  end
-
   local parsed = parseHints(result, ctx)
+
+  -- range given is 1-indexed, but clear is 0-indexed (end is exclusive).
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, range.start[1] - 1, range._end[1])
 
   local helper = require "lsp-inlayhints.handler_helper"
   local hints = helper.render_hints(bufnr, parsed, ns, range)
 
-  if #store.b[bufnr].cached_hints > 30 then
-    store.b[bufnr].cached_hints = {}
-  end
-
-  store.b[bufnr].cached_hints[_key(bufnr)] = hints
+  -- store.b[bufnr].cached_hints = vim.tbl_extend("force", store.b[bufnr].cached_hints, hints)
+  store.b[bufnr].cached_hints = hints
 end
 
 local render_cached = function(bufnr)
-  -- local hints = store.cached_hints:get((bufnr))
-  local hints = store.b[bufnr].cached_hints[_key(bufnr)]
+  local hints = store.b[bufnr].cached_hints
   if not hints then
     return
   end
 
   for _, v in pairs(hints) do
     local line, virt_text = unpack(v)
-    M.clear(line, line + 1)
+    M.clear(bufnr, line, line + 1)
 
     vim.api.nvim_buf_set_extmark(bufnr, ns, line, 0, {
       virt_text_pos = config.options.inlay_hints.right_align and "right_align" or "eol",
@@ -282,14 +279,21 @@ end
 
 --- Clear all hints in the current buffer
 --- Lines are 0-indexed.
+---@param bufnr integer | nil, defaults to 0 (current buffer)
 ---@param line_start integer | nil, defaults to 0 (start of buffer)
 ---@param line_end integer | nil, defaults to -1 (end of buffer)
-function M.clear(line_start, line_end)
+function M.clear(bufnr, line_start, line_end)
+  if not bufnr or bufnr == 0 then
+    bufnr = vim.api.nvim_get_current_buf()
+  end
+
   -- clear namespace which clears the virtual text as well
-  vim.api.nvim_buf_clear_namespace(0, ns, line_start or 0, line_end or -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, line_start or 0, line_end or -1)
 end
 
 local scheduler = require("lsp-inlayhints.utils").scheduler:new()
+
+local cts = utils.cancellationTokenSource:new()
 
 -- Sends the request to get the inlay hints and show them
 ---@param bufnr number | nil
@@ -307,9 +311,13 @@ function M.show(bufnr, is_insert)
     return
   end
 
+  cts:cancel()
+  cts = utils.cancellationTokenSource:new()
+
   render_cached(bufnr)
 
   local info = require("lsp-inlayhints.featureDebounce")._for("InlayHints", { min = 25 })
+
   -- effectively ~1250 for insert, since we're triggering on CursorHoldI,
   local delay = is_insert and math.max(info.get(bufnr), 1000) or info.get(bufnr)
   scheduler:schedule(function()
@@ -320,12 +328,18 @@ function M.show(bufnr, is_insert)
       return
     end
 
+    local token = cts.token
+
     local uv = vim.loop
     local t1 = uv.hrtime()
 
     local method = adapter.method(bufnr)
     utils.request(client, bufnr, method, params, function(err, result, ctx)
       info.update(bufnr, (uv.hrtime() - t1) * 1e-6)
+      if token.isCancellationRequested then
+        return
+      end
+
       on_refresh(err, result, ctx, range)
     end)
   end, delay)

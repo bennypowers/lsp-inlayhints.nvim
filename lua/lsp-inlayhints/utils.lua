@@ -97,4 +97,23 @@ end
 
 utils.scheduler = scheduler
 
+local cancellationTokenSource = {}
+
+function cancellationTokenSource:new()
+  local t = {
+    token = {},
+  }
+
+  function self:cancel()
+    t.token.isCancellationRequested = true
+  end
+
+  setmetatable(t, self)
+  self.__index = self
+
+  return t
+end
+
+utils.cancellationTokenSource = cancellationTokenSource
+
 return utils
