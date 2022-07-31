@@ -115,9 +115,9 @@ local render_hints = function(bufnr, parsed, namespace, range)
   local extmarks = {}
 
   for line, line_hints in pairs(parsed) do
-    if line > range._end[1] + 1 then
-      return extmarks
-    end
+    -- if line > range._end[1] + 1 then
+    --   return extmarks
+    -- end
 
     local current_line = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1]
 

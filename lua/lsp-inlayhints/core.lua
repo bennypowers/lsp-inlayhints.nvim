@@ -28,17 +28,6 @@ local function set_store(bufnr, client)
         vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
       end,
       on_lines = function(_, _, _, first_lnum, last_lnum)
-        -- for l, _ in pairs(store.b[bufnr].cached_hints) do
-        --   if l >= last_lnum then
-        --     goto clear
-        --   end
-
-        --   if l >= first_lnum then
-        --     store.b[bufnr].cached_hints[l] = nil
-        --   end
-        -- end
-        -- ::clear::
-
         store.b[bufnr].cached_hints = {}
         vim.api.nvim_buf_clear_namespace(bufnr, ns, first_lnum, last_lnum)
       end,
@@ -248,11 +237,7 @@ local function on_refresh(err, result, ctx, range)
 end
 
 local render_cached = function(bufnr)
-  local hints = store.b[bufnr].cached_hints
-  if not hints then
-    return
-  end
-
+  local hints = store.b[bufnr].cached_hints or {}
   for _, v in pairs(hints) do
     local line, virt_text = unpack(v)
     M.clear(bufnr, line, line + 1)
@@ -293,8 +278,6 @@ end
 
 local scheduler = require("lsp-inlayhints.utils").scheduler:new()
 
-local cts = utils.cancellationTokenSource:new()
-
 -- Sends the request to get the inlay hints and show them
 ---@param bufnr number | nil
 ---@param is_insert boolean | nil
@@ -311,16 +294,17 @@ function M.show(bufnr, is_insert)
     return
   end
 
-  cts:cancel()
-  cts = utils.cancellationTokenSource:new()
-
   render_cached(bufnr)
 
   local info = require("lsp-inlayhints.featureDebounce")._for("InlayHints", { min = 25 })
 
-  -- effectively ~1250 for insert, since we're triggering on CursorHoldI,
+  -- effectively ~1250 for insert, since we're triggering on CursorHoldI
   local delay = is_insert and math.max(info.get(bufnr), 1000) or info.get(bufnr)
   scheduler:schedule(function()
+    if not vim.api.nvim_buf_is_loaded(bufnr) then
+      return
+    end
+
     local client = vim.lsp.get_client_by_id(store.b[bufnr].client.id)
     local range = get_hint_ranges(client.offset_encoding)
     local params = get_params(range, bufnr)
@@ -328,20 +312,29 @@ function M.show(bufnr, is_insert)
       return
     end
 
-    local token = cts.token
+    utils.cancel_requests(client, store.b[bufnr].requests[client.id])
+    store.b[bufnr].requests[client.id] = {}
+
+    local method = adapter.method(bufnr)
 
     local uv = vim.loop
     local t1 = uv.hrtime()
+    local _, id = utils.request(client, bufnr, method, params, function(err, result, ctx)
+      info.update(bufnr, (uv.hrtime() - t1) * 1e-6) -- ns to ms
+      -- TODO necessary?
+      local requests = store.b[bufnr].requests[client.id]
+      if not (requests and #requests > 0) then
+        if config.options.debug_mode then
+          vim.notify("cancelled inside callback", vim.log.levels.WARN)
+        end
 
-    local method = adapter.method(bufnr)
-    utils.request(client, bufnr, method, params, function(err, result, ctx)
-      info.update(bufnr, (uv.hrtime() - t1) * 1e-6)
-      if token.isCancellationRequested then
         return
       end
 
       on_refresh(err, result, ctx, range)
     end)
+
+    table.insert(store.b[bufnr].requests[client.id], id)
   end, delay)
 end
 

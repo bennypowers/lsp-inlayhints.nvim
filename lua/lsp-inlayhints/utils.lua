@@ -17,6 +17,20 @@ function utils.request(client, bufnr, method, params, handler)
   return success, id
 end
 
+function utils.cancel_requests(client, ids)
+  for _, id in pairs(ids or {}) do
+    client.cancel_request(id)
+  end
+end
+
+function utils.cancel_pending_requests(client, bufnr, method)
+  for id, r in pairs(client.requests) do
+    if r.method == method and r.bufnr == bufnr then
+      client.cancel_request(id)
+    end
+  end
+end
+
 local function cleanup_timer(timer)
   if timer then
     if timer:has_ref() then
@@ -96,24 +110,5 @@ function scheduler:clear()
 end
 
 utils.scheduler = scheduler
-
-local cancellationTokenSource = {}
-
-function cancellationTokenSource:new()
-  local t = {
-    token = {},
-  }
-
-  function self:cancel()
-    t.token.isCancellationRequested = true
-  end
-
-  setmetatable(t, self)
-  self.__index = self
-
-  return t
-end
-
-utils.cancellationTokenSource = cancellationTokenSource
 
 return utils
